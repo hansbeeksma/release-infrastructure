@@ -1,0 +1,105 @@
+name: Reusable Dependabot Auto-merge
+
+on:
+  workflow_call:
+    inputs:
+      auto-merge-patch:
+        description: 'Auto-merge patch updates'
+        required: false
+        type: boolean
+        default: true
+      auto-merge-minor-dev:
+        description: 'Auto-merge minor updates for dev dependencies'
+        required: false
+        type: boolean
+        default: true
+      auto-merge-minor-prod:
+        description: 'Auto-merge minor updates for production dependencies'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  auto-merge:
+    name: Dependabot Auto-merge
+    runs-on: ubuntu-latest
+    if: github.actor == 'dependabot[bot]'
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine auto-merge eligibility
+        id: eligible
+        run: |
+          UPDATE_TYPE="${{ steps.metadata.outputs.update-type }}"
+          DEP_TYPE="${{ steps.metadata.outputs.dependency-type }}"
+          ELIGIBLE="false"
+
+          echo "Update type: $UPDATE_TYPE"
+          echo "Dependency type: $DEP_TYPE"
+
+          # Patch updates: always auto-merge (if enabled)
+          if [ "$UPDATE_TYPE" = "version-update:semver-patch" ] && [ "${{ inputs.auto-merge-patch }}" = "true" ]; then
+            ELIGIBLE="true"
+            echo "Eligible: patch update"
+          fi
+
+          # Minor dev dependency updates
+          if [ "$UPDATE_TYPE" = "version-update:semver-minor" ] && [ "$DEP_TYPE" = "indirect" -o "$DEP_TYPE" = "direct:development" ] && [ "${{ inputs.auto-merge-minor-dev }}" = "true" ]; then
+            ELIGIBLE="true"
+            echo "Eligible: minor dev dependency"
+          fi
+
+          # Minor production dependency updates
+          if [ "$UPDATE_TYPE" = "version-update:semver-minor" ] && [ "$DEP_TYPE" = "direct:production" ] && [ "${{ inputs.auto-merge-minor-prod }}" = "true" ]; then
+            ELIGIBLE="true"
+            echo "Eligible: minor prod dependency"
+          fi
+
+          # Major updates: never auto-merge
+          if [ "$UPDATE_TYPE" = "version-update:semver-major" ]; then
+            ELIGIBLE="false"
+            echo "Not eligible: major update requires review"
+          fi
+
+          echo "eligible=$ELIGIBLE" >> $GITHUB_OUTPUT
+
+      - name: Wait for CI checks
+        if: steps.eligible.outputs.eligible == 'true'
+        run: |
+          echo "Waiting 60s for CI checks to start..."
+          sleep 60
+
+      - name: Auto-approve
+        if: steps.eligible.outputs.eligible == 'true'
+        run: gh pr review --approve "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable auto-merge
+        if: steps.eligible.outputs.eligible == 'true'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        run: |
+          if [ "${{ steps.eligible.outputs.eligible }}" = "true" ]; then
+            echo "## Auto-merge enabled" >> $GITHUB_STEP_SUMMARY
+            echo "- **Package:** ${{ steps.metadata.outputs.dependency-names }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Update:** ${{ steps.metadata.outputs.previous-version }} → ${{ steps.metadata.outputs.new-version }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Type:** ${{ steps.metadata.outputs.update-type }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## Manual review required" >> $GITHUB_STEP_SUMMARY
+            echo "- **Package:** ${{ steps.metadata.outputs.dependency-names }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Update:** ${{ steps.metadata.outputs.update-type }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Reason:** Does not meet auto-merge criteria" >> $GITHUB_STEP_SUMMARY
+          fi

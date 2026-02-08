@@ -1,0 +1,118 @@
+name: Reusable Notifications
+
+on:
+  workflow_call:
+    inputs:
+      workflow-name:
+        description: 'Name of the calling workflow'
+        required: true
+        type: string
+      workflow-status:
+        description: 'Status of the calling workflow (success, failure, cancelled)'
+        required: true
+        type: string
+      notify-on-success:
+        description: 'Send notification on success'
+        required: false
+        type: boolean
+        default: false
+      notify-on-failure:
+        description: 'Send notification on failure'
+        required: false
+        type: boolean
+        default: true
+      cooldown-minutes:
+        description: 'Minimum minutes between same-type notifications'
+        required: false
+        type: number
+        default: 60
+    secrets:
+      SLACK_WEBHOOK_URL:
+        required: false
+
+jobs:
+  notify:
+    name: Send Notification
+    runs-on: ubuntu-latest
+    if: |
+      (inputs.workflow-status == 'failure' && inputs.notify-on-failure) ||
+      (inputs.workflow-status == 'success' && inputs.notify-on-success)
+    steps:
+      - name: Check cooldown
+        id: cooldown
+        uses: actions/cache@v4
+        with:
+          path: /tmp/notify-cooldown
+          key: notify-${{ github.repository }}-${{ inputs.workflow-name }}-${{ inputs.workflow-status }}
+          restore-keys: |
+            notify-${{ github.repository }}-${{ inputs.workflow-name }}-
+
+      - name: Evaluate cooldown
+        id: should-notify
+        run: |
+          COOLDOWN_FILE="/tmp/notify-cooldown/last-notify"
+          mkdir -p /tmp/notify-cooldown
+
+          SHOULD_NOTIFY="true"
+
+          if [ -f "$COOLDOWN_FILE" ]; then
+            LAST_NOTIFY=$(cat "$COOLDOWN_FILE")
+            NOW=$(date +%s)
+            DIFF=$(( (NOW - LAST_NOTIFY) / 60 ))
+
+            if [ "$DIFF" -lt "${{ inputs.cooldown-minutes }}" ]; then
+              echo "Cooldown active: last notification $DIFF minutes ago (threshold: ${{ inputs.cooldown-minutes }})"
+              SHOULD_NOTIFY="false"
+            fi
+          fi
+
+          echo "should_notify=$SHOULD_NOTIFY" >> $GITHUB_OUTPUT
+          date +%s > "$COOLDOWN_FILE"
+
+      - name: GitHub Step Summary
+        if: steps.should-notify.outputs.should_notify == 'true'
+        run: |
+          STATUS_EMOJI=$([[ "${{ inputs.workflow-status }}" == "failure" ]] && echo "🔴" || echo "🟢")
+
+          echo "## $STATUS_EMOJI Workflow: ${{ inputs.workflow-name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repository:** ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ inputs.workflow-status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Send Slack notification
+        if: steps.should-notify.outputs.should_notify == 'true' && env.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          STATUS_EMOJI=$([[ "${{ inputs.workflow-status }}" == "failure" ]] && echo ":red_circle:" || echo ":large_green_circle:")
+
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"blocks\": [
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": \"$STATUS_EMOJI *${{ inputs.workflow-name }}* - ${{ inputs.workflow-status }}\\n*Repo:* ${{ github.repository }}\\n*Branch:* ${{ github.ref_name }}\"
+                  }
+                },
+                {
+                  \"type\": \"actions\",
+                  \"elements\": [
+                    {
+                      \"type\": \"button\",
+                      \"text\": {\"type\": \"plain_text\", \"text\": \"View Run\"},
+                      \"url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+                    }
+                  ]
+                }
+              ]
+            }"
+
+      - name: Skipped (cooldown)
+        if: steps.should-notify.outputs.should_notify == 'false'
+        run: echo "Notification skipped due to cooldown"

@@ -1,0 +1,72 @@
+name: Reusable Release Please
+
+on:
+  workflow_call:
+    inputs:
+      release-type:
+        description: 'Release type (node, python, etc.)'
+        required: false
+        type: string
+        default: 'node'
+      target-branch:
+        description: 'Branch to create releases from'
+        required: false
+        type: string
+        default: 'main'
+      config-file:
+        description: 'Path to release-please-config.json'
+        required: false
+        type: string
+        default: 'release-please-config.json'
+      manifest-file:
+        description: 'Path to .release-please-manifest.json'
+        required: false
+        type: string
+        default: '.release-please-manifest.json'
+    outputs:
+      release-created:
+        description: 'Whether a release was created'
+        value: ${{ jobs.release-please.outputs.release_created }}
+      tag-name:
+        description: 'The release tag name'
+        value: ${{ jobs.release-please.outputs.tag_name }}
+      version:
+        description: 'The release version'
+        value: ${{ jobs.release-please.outputs.version }}
+      pr-number:
+        description: 'The release PR number'
+        value: ${{ jobs.release-please.outputs.pr }}
+
+jobs:
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+      pr: ${{ steps.release.outputs.pr }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          release-type: ${{ inputs.release-type }}
+          target-branch: ${{ inputs.target-branch }}
+          config-file: ${{ inputs.config-file }}
+          manifest-file: ${{ inputs.manifest-file }}
+
+      - name: Release summary
+        if: ${{ steps.release.outputs.release_created }}
+        run: |
+          echo "## Release Created" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ steps.release.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag:** ${{ steps.release.outputs.tag_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **URL:** ${{ steps.release.outputs.html_url }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: PR summary
+        if: ${{ steps.release.outputs.pr && !steps.release.outputs.release_created }}
+        run: |
+          echo "## Release PR Updated" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **PR:** #${{ steps.release.outputs.pr }}" >> $GITHUB_STEP_SUMMARY

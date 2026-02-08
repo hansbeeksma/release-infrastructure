@@ -1,0 +1,212 @@
+name: Reusable CI
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: 'Node.js version'
+        required: false
+        type: string
+        default: '20'
+      run-lint:
+        description: 'Run ESLint'
+        required: false
+        type: boolean
+        default: true
+      run-tests:
+        description: 'Run tests'
+        required: false
+        type: boolean
+        default: true
+      run-build:
+        description: 'Run build'
+        required: false
+        type: boolean
+        default: true
+      run-secret-scan:
+        description: 'Run gitleaks secret scanning'
+        required: false
+        type: boolean
+        default: true
+      run-audit:
+        description: 'Run npm audit'
+        required: false
+        type: boolean
+        default: true
+      audit-level:
+        description: 'npm audit level (critical, high, moderate, low)'
+        required: false
+        type: string
+        default: 'critical'
+      working-directory:
+        description: 'Working directory for monorepo support'
+        required: false
+        type: string
+        default: '.'
+      gitleaks-version:
+        description: 'Gitleaks version'
+        required: false
+        type: string
+        default: '8.30.0'
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    if: ${{ inputs.run-lint }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: 'npm'
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: ${{ inputs.working-directory }}
+
+      - name: Run ESLint
+        run: npm run lint
+        working-directory: ${{ inputs.working-directory }}
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    if: ${{ inputs.run-tests }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: 'npm'
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: ${{ inputs.working-directory }}
+
+      - name: Run tests
+        run: npm test
+        working-directory: ${{ inputs.working-directory }}
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    if: ${{ inputs.run-build }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: 'npm'
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: ${{ inputs.working-directory }}
+
+      - name: Build
+        run: npm run build
+        working-directory: ${{ inputs.working-directory }}
+
+  secret-scanning:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    if: ${{ inputs.run-secret-scan }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${{ inputs.gitleaks-version }}/gitleaks_${{ inputs.gitleaks-version }}_linux_x64.tar.gz" | tar xz
+          sudo mv gitleaks /usr/local/bin/
+
+      - name: Run gitleaks
+        run: |
+          if [ -f ".gitleaks.toml" ]; then
+            CONFIG="--config .gitleaks.toml"
+          else
+            CONFIG=""
+          fi
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            gitleaks detect $CONFIG --log-opts="origin/${{ github.base_ref }}...HEAD" --verbose
+          else
+            gitleaks detect $CONFIG --log-opts="HEAD~1..HEAD" --verbose
+          fi
+
+  dependency-audit:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+    if: ${{ inputs.run-audit }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: 'npm'
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: ${{ inputs.working-directory }}
+
+      - name: Audit production dependencies
+        run: npm audit --audit-level=${{ inputs.audit-level }} --omit=dev
+        working-directory: ${{ inputs.working-directory }}
+
+      - name: Audit all dependencies (warning only)
+        continue-on-error: true
+        run: npm audit --audit-level=${{ inputs.audit-level }}
+        working-directory: ${{ inputs.working-directory }}
+
+  all-checks:
+    name: All Checks Passed
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [lint, test, build, secret-scanning, dependency-audit]
+    steps:
+      - name: Check results
+        run: |
+          FAILED=false
+
+          check_result() {
+            local name=$1
+            local result=$2
+            local required=$3
+
+            if [ "$required" = "true" ] && [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
+              echo "FAIL: $name ($result)"
+              FAILED=true
+            elif [ "$result" = "failure" ]; then
+              echo "WARN: $name ($result)"
+            else
+              echo "OK: $name ($result)"
+            fi
+          }
+
+          check_result "lint" "${{ needs.lint.result }}" "${{ inputs.run-lint }}"
+          check_result "test" "${{ needs.test.result }}" "${{ inputs.run-tests }}"
+          check_result "build" "${{ needs.build.result }}" "${{ inputs.run-build }}"
+          check_result "secret-scanning" "${{ needs.secret-scanning.result }}" "${{ inputs.run-secret-scan }}"
+          check_result "dependency-audit" "${{ needs.dependency-audit.result }}" "${{ inputs.run-audit }}"
+
+          if [ "$FAILED" = "true" ]; then
+            echo ""
+            echo "One or more required checks failed!"
+            exit 1
+          fi
+
+          echo ""
+          echo "All CI checks passed!"
