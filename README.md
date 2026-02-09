@@ -87,6 +87,35 @@ jobs:
     secrets: inherit
 ```
 
+## Scripts
+
+De `scripts/` directory bevat standalone Bash-scripts voor release governance:
+
+| Script | Gebruik | Doel |
+|--------|---------|------|
+| `dora-metrics.sh` | `./scripts/dora-metrics.sh --project-dir /path/to/project` | DORA metrics berekenen (Deployment Frequency, Lead Time, Change Failure Rate, MTTR) |
+| `release-readiness.sh` | `./scripts/release-readiness.sh --project-dir /path/to/project` | Pre-flight release checks (9 gates: tests, build, lint, security, gitleaks, etc.) |
+
+### DORA Metrics
+
+```bash
+# Draai op een project
+./scripts/dora-metrics.sh --project-dir ~/Development/products/vino12
+
+# Output: Deployment Frequency, Lead Time, Change Failure Rate, MTTR
+# Ratings: ELITE / HIGH / MEDIUM / LOW
+```
+
+### Release Readiness
+
+```bash
+# Pre-flight check voor release
+./scripts/release-readiness.sh --project-dir ~/Development/products/vino12
+
+# Output: GO / NO-GO met 9 quality gates
+# Gates: working tree, branch, remote sync, tests, build, security, gitleaks, lint, release info
+```
+
 ## Documentatie
 
 - [Setup Guide](docs/SETUP.md) - Volledige onboarding per project
